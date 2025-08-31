@@ -177,6 +177,8 @@ void task_guardiana_lcd(void *pvParameter)
                 case 1:
                     lcd_set_cursor(3,0);
                     lcd_string("T ");
+                    lcd_set_cursor(3,4);
+                    lcd_string("    ");
                     break;
                 case 2:
                     lcd_set_cursor(3,0);
@@ -363,6 +365,7 @@ void task_SetPoint(void *params)
         }
         if(pagina==4)
         {
+            data.linea=4;
             if (flag == 1)
             {
                 xQueueSend(queue_sd, &data, pdMS_TO_TICKS(10));
