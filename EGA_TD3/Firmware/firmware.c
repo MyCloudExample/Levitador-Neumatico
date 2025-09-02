@@ -72,7 +72,7 @@ typedef struct
     uint32_t setpoint;
     float setpoint_min;
     float setpoint_max;
-    uint8_t linea; //Nos posicionamos en la linea 4 e indicamos la accion a realizar
+    uint8_t linea; //Nos posicionamos en la linea 4 e indicamos la posicion en la linea 4
     uint8_t OnOff;
 }estructura_setpoint;
 //========================================ELEMENTOS DE FREERTOS=====================================================================
@@ -87,7 +87,7 @@ QueueHandle_t queue_min;
 QueueHandle_t queue_max_salida;
 QueueHandle_t queue_min_salida;
 QueueHandle_t cola_paginas; //Envia datos a la tarea tas_setpoint
-TaskHandle_t  taskSD = NULL;
+TaskHandle_t  taskSD = NULL; //Usando para referenciar la tarea task_guardiana_sd
 /*----------------------------------------------------------------------------------------------------------------------------------*/
 /*----------------------------------------TAREAS DE FREERTOS------------------------------------------------------------------------*/
 void task_init(void *params) 
@@ -464,7 +464,8 @@ void task_rtc(void *pvParameters)
             if (ds3231_get_time(I2C, &toma_fecha)) 
             {
                 //printf("Hora: %02d:%02d:%02d - Fecha: %02d/%02d/20%02d\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year);
-                xQueueSend(queue_rtc,&toma_fecha,pdMS_TO_TICKS(100)); //Si se usa maxPORT_DELAY se bloqeuara
+                //xQueueSend(queue_rtc,&toma_fecha,pdMS_TO_TICKS(100)); //Si se usa maxPORT_DELAY se bloqeuara
+                xQueueOverwrite(queue_rtc,&toma_fecha);
             } 
             else 
             {
@@ -475,7 +476,8 @@ void task_rtc(void *pvParameters)
                 toma_fecha.date = 0;
                 toma_fecha.month = 0;
                 toma_fecha.year = 0;
-                xQueueSend(queue_rtc,&toma_fecha,pdMS_TO_TICKS(10));     
+                //xQueueSend(queue_rtc,&toma_fecha,pdMS_TO_TICKS(10));
+                xQueueOverwrite(queue_rtc,&toma_fecha);     
             }
         }
         xSemaphoreGive(sem_mutexi2c);
@@ -559,13 +561,12 @@ int main(void)
     configuracion_gpio_boton();
 
     // Creacion de colas
-    queue_rtc = xQueueCreate(5,sizeof(ds3231_time_t));
+    queue_rtc = xQueueCreate(1,sizeof(ds3231_time_t));
     queue_hcsr04 = xQueueCreate(5,sizeof(float));
     queue_setpoint = xQueueCreate(5,sizeof(estructura_setpoint));
     queue_leds = xQueueCreate(5,sizeof(estructura_setpoint));
     queue_sd = xQueueCreate(1,sizeof(estructura_setpoint));
-    queue_pid = xQueueCreate(5,sizeof(estructura_setpoint));
-    queue_min_salida = xQueueCreate(5,sizeof(uint16_t));
+    queue_pid = xQueueCreate(1,sizeof(estructura_setpoint));
     cola_paginas = xQueueCreate(1, sizeof(uint8_t));   // cola que posee una unica posicion para memorizar el cambio de paginas
     //xQueueOverwrite(cola_paginas, &pagina);
     sem_mutexi2c = xSemaphoreCreateMutex();
