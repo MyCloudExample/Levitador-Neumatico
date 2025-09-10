@@ -55,12 +55,12 @@
 #define SENSOR_HEIGHT 45.0f //Altura del sensor
 //========================================PARAMETROS INICIALES (SE DEBEN AJUSTAR DURANTE LAS PRUEBAS)===============================
 #define BASE_PWM 2500       // Incrementado inicialmente
-#define KP 300.0f             // 25Cuanto mayor sea el Kp mas rapida sera la respuesta, si es muy grande habra osiclacion e inestabilidad
-#define KI 49.0f             // 3.6Elimina error en regimen permanente, si es muy grande la respuesta sera lenta y existira overshot
-#define KD 54.0f             // 2.5Amortigua las oscilaciones, si es muy alto provocara oscilacion ya que amplifica el ruido
+#define KP 400.0f             // 25Cuanto mayor sea el Kp mas rapida sera la respuesta, si es muy grande habra osiclacion e inestabilidad
+#define KI 40.0f             // 3.6Elimina error en regimen permanente, si es muy grande la respuesta sera lenta y existira overshot
+#define KD 50.0f             // 2.5Amortigua las oscilaciones, si es muy alto provocara oscilacion ya que amplifica el ruido
 #define MIN_PWM 1800        // Mínimo absoluto
 #define MAX_PWM 4000        // Máximo seguro
-#define DT      0.01f       //Factor para ajustar el tiempo de muestreo
+#define DT      0.03f       //Factor para ajustar el tiempo de muestreo
 /*----------------------------------------------------------------------------------------------------------------------------------*/
 /*----------------------------------------VARAIBLES DE RPOGRAMA, COLAS Y SEMAFOROS--------------------------------------------------*/
 //========================================VARIABLES QUE NO SON PROPIAS DE FREERTOS==================================================
@@ -201,7 +201,7 @@ void task_guardiana_lcd(void *pvParameter)
             }
         }
         xSemaphoreGive(sem_mutexi2c);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 //----------------------------------------TAREA GUARDIANA DE MODULO SD--------------------------------------------------------------
@@ -215,7 +215,7 @@ void task_guardiana_sd(void *params)
 
     while(true) 
     {
-        xQueueReceive(queue_rtc, &toma_fecha,pdMS_TO_TICKS(100));
+        xQueueReceive(queue_rtc, &toma_fecha, 0);
         xQueueReceive(queue_sd, &datasd,portMAX_DELAY);
         vTaskDelay(pdMS_TO_TICKS(5));
         sprintf(buffer1,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,Setpoint: %lu,SetpointMax: %.2f,SetpointMin: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year,datasd.setpoint, datasd.setpoint_max, datasd.setpoint_min);
@@ -481,7 +481,7 @@ void task_rtc(void *pvParameters)
             }
         }
         xSemaphoreGive(sem_mutexi2c);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 //---------------------------------------TAREA DE CONTROL PID-----------------------------------------------------------------------
@@ -489,7 +489,7 @@ void task_pid(void *pvParameters)
 { 
     float TARGET=0.0f;
     estructura_setpoint data;
-    //static uint16_t last_pwm = BASE_PWM;
+    static uint16_t last_pwm = BASE_PWM;
     pwm_config_t fan = 
     {
         .pin = PIN_PWM,
@@ -535,10 +535,10 @@ void task_pid(void *pvParameters)
         xQueueSend(queue_hcsr04,&current_height,pdMS_TO_TICKS(5));
         filtered_height = alpha * current_height + (1-alpha) * filtered_height;
         //Control PID
-        float control = PIDController_Update(&pid, TARGET, filtered_height, 0.02f);
+        float control = PIDController_Update(&pid, TARGET, filtered_height, 0.03f);
         uint16_t pwm = (int16_t)(control);
         //Limites de seguridad con histeresis
-        static uint16_t last_pwm = BASE_PWM;
+        //static uint16_t last_pwm = BASE_PWM;
         if(abs(pwm - last_pwm > 100))
         {
             pwm = (pwm + last_pwm*2)/3; //Promedio ponderado
@@ -580,7 +580,7 @@ int main(void)
     xTaskCreate(task_debounce_boton, "debounce_boton", 1024, NULL, 2, NULL);
     xTaskCreate(task_guardiana_leds,"guardianaLEDS",256,NULL,2,NULL);
     xTaskCreate(task_rtc,"regsitro_fecha",256,NULL,2,NULL);
-    xTaskCreate(task_pid,"control_pid",256,NULL,2,NULL);
+    xTaskCreate(task_pid,"control_pid",256,NULL,3,NULL);
 
     // Arranca el scheduler
     vTaskStartScheduler();
