@@ -73,21 +73,21 @@ typedef struct
     float setpoint_min;
     float setpoint_max;
     uint8_t linea; //Nos posicionamos en la linea 4 e indicamos la posicion en la linea 4
-    uint8_t OnOff;
+    uint8_t guardado; //Se utiliza para indicar altura superada
 }estructura_setpoint;
 //========================================ELEMENTOS DE FREERTOS=====================================================================
-SemaphoreHandle_t sem_mutexi2c;//Para sincronizar el uso del I2C por parte del LCD y el RTC
-QueueHandle_t queue_rtc; //Envia datos desde task_rtc a task_guardiana_sd
-QueueHandle_t queue_hcsr04; //Envia datos desde task_guardiana_lcd
-QueueHandle_t queue_setpoint; //Envia datos desde task_setpoint a task_pid, task_guardiana_lcd
-QueueHandle_t queue_leds; //Envia datos a la tarea task_guardiana_leds 
-QueueHandle_t queue_sd; //Envia datos a la memoria SD
-QueueHandle_t queue_pid; //Envia datos al PID
-QueueHandle_t queue_min;
-QueueHandle_t queue_max_salida;
-QueueHandle_t queue_min_salida;
-QueueHandle_t cola_paginas; //Envia datos a la tarea tas_setpoint
-TaskHandle_t  taskSD = NULL; //Usando para referenciar la tarea task_guardiana_sd
+SemaphoreHandle_t   sem_mutexi2c;//Para sincronizar el uso del I2C por parte del LCD y el RTC
+SemaphoreHandle_t   sem_memoriaSD; //Oar sincronizar la task_gurdiana_sd
+QueueHandle_t       queue_rtc; //Envia datos desde task_rtc a task_guardiana_sd
+QueueHandle_t       queue_hcsr04; //Envia datos desde task_guardiana_lcd
+QueueHandle_t       queue_setpoint; //Envia datos desde task_setpoint a task_pid, task_guardiana_lcd
+QueueHandle_t       queue_leds; //Envia datos a la tarea task_guardiana_leds 
+QueueHandle_t       queue_sd; //Envia datos a la memoria SD
+QueueHandle_t       queue_pid; //Envia datos al PID
+QueueHandle_t       queue_superada; //Envia la altura superada
+QueueHandle_t       cola_paginas; //Envia datos a la tarea tas_setpoint
+TaskHandle_t        taskSD = NULL; //Usando para referenciar la tarea task_guardiana_sd
+TaskHandle_t        taskLEDS = NULL; //Usado para refernecianr la tarea task_guradiana_leds
 /*----------------------------------------------------------------------------------------------------------------------------------*/
 /*----------------------------------------TAREAS DE FREERTOS------------------------------------------------------------------------*/
 void task_init(void *params) 
@@ -122,8 +122,8 @@ void task_init(void *params)
     gpio_put(GPIO_LED_MIN, 0); // Se coloca un 0 a la salida
     //Inicializo memoria SD
     printf("Tarea elimianda\n");
-    // Elimino la tarea para liberar recursos
-    vTaskSuspend(taskSD);
+    // Elimino la tarea para liberar recursos y toma el semaforo para bloqeuar la task_guardiana_sd
+    xSemaphoreTake(sem_memoriaSD,pdMS_TO_TICKS(0));
     vTaskDelete(NULL);
 }
 //----------------------------------------TAREA DE SENSANDO DE LA ALTURA------------------------------------------------------------
@@ -206,22 +206,24 @@ void task_guardiana_lcd(void *pvParameter)
 }
 //----------------------------------------TAREA GUARDIANA DE MODULO SD--------------------------------------------------------------
 void task_guardiana_sd(void *params) 
-{ estructura_setpoint datasd;
-  char buffer1[500];
+{ estructura_setpoint datasd, AlturaSuperada;
+  char buffer1[500], buffer2[100];
   FATFS fs;
   FIL fil;
   const char* const filename = "dataloger.txt";
   ds3231_time_t toma_fecha;
+  uint8_t guardado;
 
     while(true) 
     {
+        xSemaphoreTake(sem_memoriaSD, portMAX_DELAY);
+        printf("Dentro de task_guardiana_sd\n");
         xQueueReceive(queue_rtc, &toma_fecha, 0);
-        xQueueReceive(queue_sd, &datasd,portMAX_DELAY);
-        vTaskDelay(pdMS_TO_TICKS(5));
+        xQueuePeek(queue_sd, &datasd,pdMS_TO_TICKS(0));
+        xQueuePeek(queue_leds,&AlturaSuperada,pdMS_TO_TICKS(0));
         sprintf(buffer1,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,Setpoint: %lu,SetpointMax: %.2f,SetpointMin: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year,datasd.setpoint, datasd.setpoint_max, datasd.setpoint_min);
+        sprintf(buffer2,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,SetpointMax: %.2f,SetpointMin: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year, datasd.setpoint_max, datasd.setpoint_min);
         //printf("TEXTO: %s\n",buffer1);
-        vTaskDelay(pdMS_TO_TICKS(5));
-        
         FRESULT fr = f_mount(&fs, "", 1);
         if (FR_OK != fr) 
         {
@@ -230,6 +232,7 @@ void task_guardiana_sd(void *params)
 
         // Se abre el archivo y se escribe en el archivo
         fr = f_open(&fil, filename, FA_OPEN_APPEND | FA_WRITE);
+        
         if (FR_OK != fr && FR_EXIST != fr) 
         {
             panic("f_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
@@ -247,18 +250,14 @@ void task_guardiana_sd(void *params)
 
         // Desmonta la memoria SD
         f_unmount("");
-        //puts("Goodbye, world!");
-        flag = 0;
         printf("TAREA task_guardiana_sd suspendida\n");
-       
-        vTaskSuspend(NULL);
     }
 }
 //----------------------------------------TAREA GUARDIANA DE LEDS-------------------------------------------------------------------
 void task_guardiana_leds(void *params) 
 {
-    estructura_setpoint data;
-    float altura = 0;
+    estructura_setpoint data, AlturaSuperada;
+    float altura = 0, alturaMax = 0, alturaMin = 0;
     gpio_init(GPIO_LED_MAX); //Inicio el pin 16
     gpio_set_dir(GPIO_LED_MAX, GPIO_OUT); //Se configura como salida
     gpio_put(GPIO_LED_MAX, 0); // Se coloca un 0 a la salida
@@ -268,7 +267,7 @@ void task_guardiana_leds(void *params)
 
     while(true)
     {
-        if (xQueueReceive(queue_leds, &data, portMAX_DELAY) == pdPASS) 
+        if (xQueuePeek(queue_leds, &data, portMAX_DELAY) == pdPASS) 
         {
             //printf("TARGET:%lu,MAX:%.2f,MIN:%.2f",data.setpoint,data.setpoint_max,data.setpoint_min);
         }
@@ -278,7 +277,6 @@ void task_guardiana_leds(void *params)
             if(altura > data.setpoint_max)
             {
                 gpio_put(GPIO_LED_MAX,true);
-                //vTaskDelay(pdMS_TO_TICKS(100));
             }
             if(altura < data.setpoint_max)
             {
@@ -302,7 +300,8 @@ void task_guardiana_leds(void *params)
 //----------------------------------------TAREA PARA INICAR EL SETPOINT-------------------------------------------------------------
 void task_SetPoint(void *params)
 { uint32_t valor_adc, valor_altura;
-  estructura_setpoint data={.setpoint=0, .setpoint_max=0, .setpoint_min=0, .OnOff=0};  
+  estructura_setpoint data={.setpoint=0, .setpoint_max=0, .setpoint_min=0, .guardado=0};
+  estructura_setpoint aux;  
   float tension;
   char buffer[30];
   uint8_t pagina=0, activacionSD=0;
@@ -311,80 +310,87 @@ void task_SetPoint(void *params)
     { 
        if (xQueuePeek(cola_paginas, &pagina, portMAX_DELAY) == pdPASS) 
         {}
-       if (pagina == 1) 
+       switch (pagina)
        {
-        flag = 1;
-        data.OnOff = 0;
-        valor_adc = adc_read();
-        tension = (valor_adc * 3.3f) / 4095; 
-        valor_altura = ((valor_adc * 3.3f) / 4095)*10;
-        data.setpoint = valor_altura;
-        data.linea = 1;
-            if(valor_altura > 28)
-            {
-                data.setpoint = 28;
-            }
-            if(valor_altura == 0)
-            {
-                data.setpoint = 5;
-            }
-            //printf("PAGINA 1 |setpoint= %lu | Valor altura= %lu \n", data.setpoint, valor_altura);
-        } 
-        if(pagina==2) 
-        {
-            valor_adc = adc_read();
-            tension = (valor_adc * 3.3f) / 4095; 
-            valor_altura = ((valor_adc * 3.3f) / 4095)*10;
-            data.setpoint_max = valor_altura;
-            data.linea = 2;
-            if(valor_altura > data.setpoint)
-            {
+        case 1:
+                xQueueReceive(queue_sd, &aux, pdMS_TO_TICKS(0)); //Borra la cola de task_guradina_sd
+                xQueueReceive(queue_leds, &aux, pdMS_TO_TICKS(0)); //Borra la cola de task_guradiana_leds
+                vTaskSuspend(taskLEDS); 
+                data.guardado = 0;
+                valor_adc = adc_read();
+                tension = (valor_adc * 3.3f) / 4095; 
+                valor_altura = ((valor_adc * 3.3f) / 4095)*10;
+                data.setpoint = valor_altura;
+                data.linea = 1;
+                    if(valor_altura > 28)
+                    {
+                        data.setpoint = 28;
+                    }
+                    if(valor_altura == 0)
+                    {
+                        data.setpoint = 5;
+                    }
+            break;
+        case 2:
+                valor_adc = adc_read();
+                tension = (valor_adc * 3.3f) / 4095; 
+                valor_altura = ((valor_adc * 3.3f) / 4095)*10;
                 data.setpoint_max = valor_altura;
-            }
-            else
-            {
-                data.setpoint_max = data.setpoint + 1;
-            }
-            //printf("PAGINA 2 |setpointMax= %.2f | Valor altura= %lu \n", data.setpoint_max, valor_altura);
-        }
-        if(pagina==3) 
-        {
-            valor_adc = adc_read();
-            tension = (valor_adc * 3.3f) / 4095; 
-            valor_altura = ((valor_adc * 3.3f) / 4095)*10;
-            data.linea = 3;
-           if(valor_altura < data.setpoint)
-            {
-                data.setpoint_min = valor_altura;
-            }
-            else
-            {
-                data.setpoint_min = data.setpoint - 1.0f;
-            }
-            //printf("PAGINA 3 |setpointMin= %.2f | Valor altura= %lu \n", data.setpoint_min, valor_altura);
-        }
-        if(pagina==4)
-        {
-            data.linea=4;
-            if (flag == 1)
-            {
-                xQueueSend(queue_sd, &data, pdMS_TO_TICKS(10));
-                vTaskResume(taskSD);
-            }
-            else
-            {
-                printf("Setpont GUARDADO\n");
-            }
-        }
-        if(pagina==0) 
-        {
-            //printf("PAGINA 0 |setpoint= %lu | setpoint_max=%.2f | setpoint_min= %.2f \n", data.setpoint,data.setpoint_max,data.setpoint_min);
-            data.linea = 0;
-            xQueueSend(queue_pid, &data, pdMS_TO_TICKS(10));
-        }
-       xQueueSend(queue_setpoint, &data, pdMS_TO_TICKS(10)); //Se quedara aqui ya que no se desopucpa la cola
-       xQueueSend(queue_leds,&data,pdMS_TO_TICKS(10));
-       //xQueueSend(queue_sd,&data,pdMS_TO_TICKS(10)); //Envia datos a la task_guardian_sd
+                data.linea = 2;
+                if(valor_altura > data.setpoint)
+                {
+                    data.setpoint_max = valor_altura;
+                }
+                else
+                {
+                    data.setpoint_max = data.setpoint + 1;
+                }
+                //printf("PAGINA 2 |setpointMax= %.2f | Valor altura= %lu \n", data.setpoint_max, valor_altura);
+            break;
+        case 3:
+                valor_adc = adc_read();
+                tension = (valor_adc * 3.3f) / 4095; 
+                valor_altura = ((valor_adc * 3.3f) / 4095)*10;
+                data.linea = 3;
+                if(valor_altura < data.setpoint)
+                {
+                    data.setpoint_min = valor_altura;
+                }
+                else
+                {
+                    data.setpoint_min = data.setpoint - 1.0f;
+                }
+                //printf("PAGINA 3 |setpointMin= %.2f | Valor altura= %lu \n", data.setpoint_min, valor_altura);
+            break;
+        case 4:
+                data.linea=4;
+                data.guardado = 0;
+                if (xQueueSend(queue_sd, &data, pdMS_TO_TICKS(0)) == pdPASS)
+                {
+                    xSemaphoreGive(sem_memoriaSD);
+                }
+                else
+                {
+                    //printf("Setpont GUARDADO\n");
+                }
+                break;
+        case 0:
+                //printf("PAGINA 0 |setpoint= %lu | setpoint_max=%.2f | setpoint_min= %.2f \n", data.setpoint,data.setpoint_max,data.setpoint_min);
+                if( xQueueSend(queue_leds,&data,pdMS_TO_TICKS(0)) == pdPASS)
+                {
+                    vTaskResume(taskLEDS);
+                }
+                else
+                {
+                    //printf("Sensado de alturas limites activado\n");
+                }
+                data.linea = 0;
+                xQueueSend(queue_pid, &data, pdMS_TO_TICKS(0));
+                break;            
+        default:
+            break;
+       }
+       xQueueSend(queue_setpoint, &data, pdMS_TO_TICKS(0)); //Se quedara aqui ya que no se desopucpa la cola
        vTaskDelay(pdMS_TO_TICKS(50));
 }
            
@@ -566,10 +572,12 @@ int main(void)
     queue_setpoint = xQueueCreate(5,sizeof(estructura_setpoint));
     queue_leds = xQueueCreate(5,sizeof(estructura_setpoint));
     queue_sd = xQueueCreate(1,sizeof(estructura_setpoint));
+    queue_superada = xQueueCreate(1,sizeof(estructura_setpoint));
     queue_pid = xQueueCreate(1,sizeof(estructura_setpoint));
     cola_paginas = xQueueCreate(1, sizeof(uint8_t));   // cola que posee una unica posicion para memorizar el cambio de paginas
     //xQueueOverwrite(cola_paginas, &pagina);
     sem_mutexi2c = xSemaphoreCreateMutex();
+    sem_memoriaSD = xSemaphoreCreateBinary();
     // Creacion de tareas
     xTaskCreate(task_init, "Init", 256, NULL, 4, NULL);
     xTaskCreate(task_SetPoint,"SetPoint",256,NULL,2,NULL);
@@ -578,7 +586,7 @@ int main(void)
     xTaskCreate(task_guardiana_sd,"guardianaSD",2048,NULL,3,&taskSD);
     xTaskCreate(task_guardiana_lcd,"guardianaLCD",256,NULL,2,NULL);
     xTaskCreate(task_debounce_boton, "debounce_boton", 1024, NULL, 2, NULL);
-    xTaskCreate(task_guardiana_leds,"guardianaLEDS",256,NULL,2,NULL);
+    xTaskCreate(task_guardiana_leds,"guardianaLEDS",256,NULL,2,&taskLEDS);
     xTaskCreate(task_rtc,"regsitro_fecha",256,NULL,2,NULL);
     xTaskCreate(task_pid,"control_pid",256,NULL,3,NULL);
 
