@@ -72,6 +72,7 @@ typedef struct
     uint32_t setpoint;
     float setpoint_min;
     float setpoint_max;
+    float altura_medida;
     uint8_t linea; //Nos posicionamos en la linea 4 e indicamos la posicion en la linea 4
     uint8_t guardado; //Se utiliza para indicar altura superada
 }estructura_setpoint;
@@ -205,26 +206,12 @@ void task_guardiana_lcd(void *pvParameter)
     }
 }
 //----------------------------------------TAREA GUARDIANA DE MODULO SD--------------------------------------------------------------
-void task_guardiana_sd(void *params) 
-{ estructura_setpoint datasd, AlturaSuperada;
-  char buffer1[500], buffer2[100];
-  FATFS fs;
+void guardar_sd (const char *cadena)
+{ FATFS fs;
   FIL fil;
   const char* const filename = "dataloger.txt";
-  ds3231_time_t toma_fecha;
-  uint8_t guardado;
-
-    while(true) 
-    {
-        xSemaphoreTake(sem_memoriaSD, portMAX_DELAY);
-        printf("Dentro de task_guardiana_sd\n");
-        xQueueReceive(queue_rtc, &toma_fecha, 0);
-        xQueuePeek(queue_sd, &datasd,pdMS_TO_TICKS(0));
-        xQueuePeek(queue_leds,&AlturaSuperada,pdMS_TO_TICKS(0));
-        sprintf(buffer1,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,Setpoint: %lu,SetpointMax: %.2f,SetpointMin: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year,datasd.setpoint, datasd.setpoint_max, datasd.setpoint_min);
-        sprintf(buffer2,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,SetpointMax: %.2f,SetpointMin: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year, datasd.setpoint_max, datasd.setpoint_min);
-        //printf("TEXTO: %s\n",buffer1);
-        FRESULT fr = f_mount(&fs, "", 1);
+  
+  FRESULT fr = f_mount(&fs, "", 1);
         if (FR_OK != fr) 
         {
             panic("f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
@@ -237,7 +224,7 @@ void task_guardiana_sd(void *params)
         {
             panic("f_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
         }
-        if (f_printf(&fil, buffer1) < 0) 
+        if (f_printf(&fil, cadena) < 0) 
         {
             printf("Escritura fallida de buffer1\n");
         }
@@ -251,12 +238,40 @@ void task_guardiana_sd(void *params)
         // Desmonta la memoria SD
         f_unmount("");
         printf("TAREA task_guardiana_sd suspendida\n");
+}
+void task_guardiana_sd(void *params) 
+{ estructura_setpoint datasd, AlturaSuperada, borrado={.guardado=2};
+  char buffer1[500], buffer2[100];
+  ds3231_time_t toma_fecha;
+  uint8_t guardado;
+
+    while(true) 
+    {
+        xSemaphoreTake(sem_memoriaSD, portMAX_DELAY);
+        printf("Dentro de task_guardiana_sd\n");
+        xQueueReceive(queue_rtc, &toma_fecha, 0);
+        xQueuePeek(queue_sd, &datasd,pdMS_TO_TICKS(0));
+        xQueuePeek(queue_superada,&AlturaSuperada,pdMS_TO_TICKS(0));
+        sprintf(buffer1,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,Setpoint: %lu,SetpointMax: %.2f,SetpointMin: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year,datasd.setpoint, datasd.setpoint_max, datasd.setpoint_min);
+        sprintf(buffer2,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,SetpointMax: %.2f,Superada: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year, AlturaSuperada.setpoint_max, AlturaSuperada.altura_medida);
+        
+        if(datasd.guardado == 0)
+        {
+            guardar_sd(buffer1);
+            printf("SEtpoint guardado\n");
+            datasd.guardado=2;    
+        }
+        if(AlturaSuperada.guardado == 1)
+        {
+            guardar_sd(buffer2);
+            printf("SEtpoint extermos guardado\n");    
+        }
     }
 }
 //----------------------------------------TAREA GUARDIANA DE LEDS-------------------------------------------------------------------
 void task_guardiana_leds(void *params) 
 {
-    estructura_setpoint data, AlturaSuperada;
+    estructura_setpoint data, AlturaSuperada, aux;
     float altura = 0, alturaMax = 0, alturaMin = 0;
     gpio_init(GPIO_LED_MAX); //Inicio el pin 16
     gpio_set_dir(GPIO_LED_MAX, GPIO_OUT); //Se configura como salida
@@ -277,11 +292,17 @@ void task_guardiana_leds(void *params)
             if(altura > data.setpoint_max)
             {
                 gpio_put(GPIO_LED_MAX,true);
+                data.altura_medida = altura;
+                data.guardado = 1;
+                if(xQueueSend(queue_superada,&data,pdMS_TO_TICKS(0) == pdPASS))
+                {
+                    xSemaphoreGive(sem_memoriaSD);
+                }
             }
             if(altura < data.setpoint_max)
             {
                 gpio_put(GPIO_LED_MAX,false);
-                //vTaskDelay(pdMS_TO_TICKS(100));
+                xQueueReceive(queue_superada,&aux,pdMS_TO_TICKS(0));
             }
             if(altura < data.setpoint_min)
             {
@@ -300,7 +321,7 @@ void task_guardiana_leds(void *params)
 //----------------------------------------TAREA PARA INICAR EL SETPOINT-------------------------------------------------------------
 void task_SetPoint(void *params)
 { uint32_t valor_adc, valor_altura;
-  estructura_setpoint data={.setpoint=0, .setpoint_max=0, .setpoint_min=0, .guardado=0};
+  estructura_setpoint data={.setpoint=0, .setpoint_max=0, .setpoint_min=0, .guardado=0, .guardado=2};
   estructura_setpoint aux;  
   float tension;
   char buffer[30];
@@ -372,6 +393,7 @@ void task_SetPoint(void *params)
                 else
                 {
                     //printf("Setpont GUARDADO\n");
+                    data.guardado = 2;
                 }
                 break;
         case 0:
@@ -386,6 +408,7 @@ void task_SetPoint(void *params)
                 }
                 data.linea = 0;
                 xQueueSend(queue_pid, &data, pdMS_TO_TICKS(0));
+                xQueueReceive(queue_sd, &aux, pdMS_TO_TICKS(0)); //Limpia la queue_sd
                 break;            
         default:
             break;
