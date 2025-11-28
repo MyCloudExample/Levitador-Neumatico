@@ -241,7 +241,7 @@ void guardar_sd (const char *cadena)
 }
 void task_guardiana_sd(void *params) 
 { estructura_setpoint datasd, AlturaSuperada, borrado={.guardado=2};
-  char buffer1[500], buffer2[100];
+  char buffer1[500], buffer2[100], buffer3[100];
   ds3231_time_t toma_fecha;
   uint8_t guardado;
 
@@ -254,17 +254,23 @@ void task_guardiana_sd(void *params)
         xQueuePeek(queue_superada,&AlturaSuperada,pdMS_TO_TICKS(0));
         sprintf(buffer1,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,Setpoint: %lu,SetpointMax: %.2f,SetpointMin: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year,datasd.setpoint, datasd.setpoint_max, datasd.setpoint_min);
         sprintf(buffer2,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,SetpointMax: %.2f,Superada: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year, AlturaSuperada.setpoint_max, AlturaSuperada.altura_medida);
+        sprintf(buffer3,"Hora: %02d:%02d:%02d,Fecha: %02d/%02d/20%02d,SetpointMin: %.2f,Superada: %.2f\n",toma_fecha.hours, toma_fecha.minutes, toma_fecha.seconds, toma_fecha.date, toma_fecha.month, toma_fecha.year, AlturaSuperada.setpoint_min, AlturaSuperada.altura_medida);
         
         if(datasd.guardado == 0)
         {
             guardar_sd(buffer1);
-            printf("SEtpoint guardado\n");
+            printf("Setpoint guardado\n");
             datasd.guardado=2;    
         }
         if(AlturaSuperada.guardado == 1)
         {
             guardar_sd(buffer2);
-            printf("SEtpoint extermos guardado\n");    
+            printf("Maximo sueprado guardado\n");    
+        }
+        if(AlturaSuperada.guardado == 2)
+        {
+            guardar_sd(buffer3);
+            printf("Minimo no alcanzado guardado\n");    
         }
     }
 }
@@ -289,6 +295,7 @@ void task_guardiana_leds(void *params)
 
         if (xQueueReceive(queue_hcsr04, &altura, portMAX_DELAY) == pdPASS) 
         {
+            //Alerta Maxima, cunado se supera el maximo permitido
             if(altura > data.setpoint_max)
             {
                 gpio_put(GPIO_LED_MAX,true);
@@ -304,10 +311,16 @@ void task_guardiana_leds(void *params)
                 gpio_put(GPIO_LED_MAX,false);
                 xQueueReceive(queue_superada,&aux,pdMS_TO_TICKS(0));
             }
+            //Alerta Minima, cuando se essta por debajo del minimo permitido
             if(altura < data.setpoint_min)
             {
                 gpio_put(GPIO_LED_MIN,true);
-                //vTaskDelay(pdMS_TO_TICKS(100));
+                data.altura_medida = altura;
+                data.guardado = 2;
+                if(xQueueSend(queue_superada,&data,pdMS_TO_TICKS(0) == pdPASS))
+                {
+                    xSemaphoreGive(sem_memoriaSD);
+                }
             }
             if(altura > data.setpoint_min)
             {
