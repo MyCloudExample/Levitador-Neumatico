@@ -89,8 +89,10 @@ QueueHandle_t       queue_superada; //Envia la altura superada
 QueueHandle_t       cola_paginas; //Envia datos a la tarea tas_setpoint
 TaskHandle_t        taskSD = NULL; //Usando para referenciar la tarea task_guardiana_sd
 TaskHandle_t        taskLEDS = NULL; //Usado para refernecianr la tarea task_guradiana_leds
-/*----------------------------------------------------------------------------------------------------------------------------------*/
-/*----------------------------------------TAREAS DE FREERTOS------------------------------------------------------------------------*/
+/*==================================================================================================================================*/
+/*========================================PROTOTIPOS DE FUNCIONES===================================================================*/
+
+/*========================================TAREAS DE FREERTOS========================================================================*/
 void task_init(void *params) 
 {
     // Inicializacion de GPIO para HC-SR04
@@ -309,7 +311,7 @@ void task_guardiana_leds(void *params)
             if(altura < data.setpoint_max)
             {
                 gpio_put(GPIO_LED_MAX,false);
-                xQueueReceive(queue_superada,&aux,pdMS_TO_TICKS(0));
+                xQueueReceive(queue_superada,&aux,pdMS_TO_TICKS(0)); //Limpio la queue_superada
             }
             //Alerta Minima, cuando se essta por debajo del minimo permitido
             if(altura < data.setpoint_min)
@@ -347,9 +349,10 @@ void task_SetPoint(void *params)
        switch (pagina)
        {
         case 1:
+                //Configuro el setpoint
                 xQueueReceive(queue_sd, &aux, pdMS_TO_TICKS(0)); //Borra la cola de task_guradina_sd
                 xQueueReceive(queue_leds, &aux, pdMS_TO_TICKS(0)); //Borra la cola de task_guradiana_leds
-                vTaskSuspend(taskLEDS); 
+                vTaskSuspend(taskLEDS); //Suspendo a task_guradina_leds hasta finalizar la configuracion
                 data.guardado = 0;
                 valor_adc = adc_read();
                 tension = (valor_adc * 3.3f) / 4095; 
@@ -366,6 +369,7 @@ void task_SetPoint(void *params)
                     }
             break;
         case 2:
+                //Configuro el setpoint maximo, fijo un maximo por defecto
                 valor_adc = adc_read();
                 tension = (valor_adc * 3.3f) / 4095; 
                 valor_altura = ((valor_adc * 3.3f) / 4095)*10;
@@ -382,6 +386,7 @@ void task_SetPoint(void *params)
                 //printf("PAGINA 2 |setpointMax= %.2f | Valor altura= %lu \n", data.setpoint_max, valor_altura);
             break;
         case 3:
+                //Conifugro el setpoint minimo, fijo un minimo por defecto
                 valor_adc = adc_read();
                 tension = (valor_adc * 3.3f) / 4095; 
                 valor_altura = ((valor_adc * 3.3f) / 4095)*10;
@@ -397,8 +402,9 @@ void task_SetPoint(void *params)
                 //printf("PAGINA 3 |setpointMin= %.2f | Valor altura= %lu \n", data.setpoint_min, valor_altura);
             break;
         case 4:
+                //Guardo configuracion en la SD
                 data.linea=4;
-                data.guardado = 0;
+                data.guardado = 0; //Indico que guardo setpoint en la SD
                 if (xQueueSend(queue_sd, &data, pdMS_TO_TICKS(0)) == pdPASS)
                 {
                     xSemaphoreGive(sem_memoriaSD);
@@ -426,7 +432,7 @@ void task_SetPoint(void *params)
         default:
             break;
        }
-       xQueueSend(queue_setpoint, &data, pdMS_TO_TICKS(0)); //Se quedara aqui ya que no se desopucpa la cola
+       xQueueSend(queue_setpoint, &data, pdMS_TO_TICKS(0)); 
        vTaskDelay(pdMS_TO_TICKS(50));
 }
            
@@ -618,7 +624,7 @@ int main(void)
     xTaskCreate(task_init, "Init", 256, NULL, 4, NULL);
     xTaskCreate(task_SetPoint,"SetPoint",256,NULL,2,NULL);
     //xTaskCreate(task_monitor_gpio,"boton",256,NULL,2,NULL);
-    //xTaskCreate(task_hcsr04,"MedicionDeDistancia",256,NULL,2,NULL);
+    xTaskCreate(task_hcsr04,"MedicionDeDistancia",256,NULL,2,NULL);
     xTaskCreate(task_guardiana_sd,"guardianaSD",2048,NULL,3,&taskSD);
     xTaskCreate(task_guardiana_lcd,"guardianaLCD",256,NULL,2,NULL);
     xTaskCreate(task_debounce_boton, "debounce_boton", 1024, NULL, 2, NULL);
